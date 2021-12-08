@@ -1,30 +1,30 @@
+use std::io::Write;
+
 use eframe::{egui, epi};
+use nfd;
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[cfg_attr(feature = "persistence", derive(serde::Deserialize, serde::Serialize))]
 #[cfg_attr(feature = "persistence", serde(default))] // if we add new fields, give them default values when deserializing old state
 pub struct TemplateApp {
-    // Example stuff:
-    label: String,
-
-    // this how you opt-out of serialization of a member
-    #[cfg_attr(feature = "persistence", serde(skip))]
-    value: f32,
+    editor_text: String,
+    save_path: Option<String>,
+    output: String,
 }
 
 impl Default for TemplateApp {
     fn default() -> Self {
         Self {
-            // Example stuff:
-            label: "Hello World!".to_owned(),
-            value: 2.7,
+            editor_text: String::new(),
+            save_path: None,
+            output: String::new(),
         }
     }
 }
 
 impl epi::App for TemplateApp {
     fn name(&self) -> &str {
-        "eframe template"
+        "Intuitive GUI"
     }
 
     /// Called once before the first frame.
@@ -48,71 +48,66 @@ impl epi::App for TemplateApp {
     fn save(&mut self, storage: &mut dyn epi::Storage) {
         epi::set_value(storage, epi::APP_KEY, self);
     }
-
+    
     /// Called each time the UI needs repainting, which may be many times per second.
     /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
-    fn update(&mut self, ctx: &egui::CtxRef, frame: &mut epi::Frame<'_>) {
-        let Self { label, value } = self;
-
-        // Examples of how to create different panels and windows.
-        // Pick whichever suits you.
-        // Tip: a good default choice is to just keep the `CentralPanel`.
-        // For inspiration and more examples, go to https://emilk.github.io/egui
-
-        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            // The top panel is often a good place for a menu bar:
-            egui::menu::bar(ui, |ui| {
-                egui::menu::menu(ui, "File", |ui| {
-                    if ui.button("Quit").clicked() {
-                        frame.quit();
-                    }
-                });
-            });
-        });
-
-        egui::SidePanel::left("side_panel").show(ctx, |ui| {
-            ui.heading("Side Panel");
-
-            ui.horizontal(|ui| {
-                ui.label("Write something: ");
-                ui.text_edit_singleline(label);
-            });
-
-            ui.add(egui::Slider::new(value, 0.0..=10.0).text("value"));
-            if ui.button("Increment").clicked() {
-                *value += 1.0;
-            }
-
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+    fn update(&mut self, ctx: &egui::CtxRef, _: &mut epi::Frame<'_>) {
+        let Self { editor_text, save_path , output} = self;
+        
+        egui::TopBottomPanel::bottom("bottom").show(ctx, |ui| {
+            ui.vertical(|ui| {
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    ui.label("powered by ");
-                    ui.hyperlink_to("egui", "https://github.com/emilk/egui");
-                    ui.label(" and ");
-                    ui.hyperlink_to("eframe", "https://github.com/emilk/egui/tree/master/eframe");
+                    if ui.button("Select Output Folder").clicked() {
+                        *save_path = save_dialog(save_path.as_deref())
+                    }
+                    else if ui.button("Compile").clicked() {
+                        while save_path.is_none() {
+                            *save_path = save_dialog(save_path.as_deref())
+                        }
+                        
+                        let save = save_path.as_ref().unwrap().trim_end_matches(".iv");
+                        let inp = save.to_owned() + ".iv";
+                        
+                        std::fs::write(&inp, editor_text.clone()).unwrap();
+                        let out = std::process::Command::new("intuitive")
+                            .current_dir(std::env::current_dir().unwrap())
+                            .args([inp, save.into()])
+                            .output().unwrap();
+                        
+                        let stdout = std::str::from_utf8(&out.stdout).unwrap();
+                        let stderr = std::str::from_utf8(&out.stderr).unwrap();
+                        *output = if stdout.is_empty() {
+                            std::io::stderr().write_all(&out.stderr).unwrap();
+                            stderr.to_owned()
+                        }
+                        else {
+                            std::io::stdout().write_all(&out.stdout).unwrap();
+                            stdout.to_owned()
+                        }
+                    };
                 });
+                ui.label(format!("Output: {}", output));
             });
         });
-
+        
         egui::CentralPanel::default().show(ctx, |ui| {
-            // The central panel the region left after adding TopPanel's and SidePanel's
-
-            ui.heading("eframe template");
-            ui.hyperlink("https://github.com/emilk/eframe_template");
-            ui.add(egui::github_link_file!(
-                "https://github.com/emilk/eframe_template/blob/master/",
-                "Source code."
-            ));
-            egui::warn_if_debug_build(ui);
-        });
-
-        if false {
-            egui::Window::new("Window").show(ctx, |ui| {
-                ui.label("Windows can be moved by dragging them.");
-                ui.label("They are automatically sized based on contents.");
-                ui.label("You can turn on resizing and scrolling if you like.");
-                ui.label("You would normally chose either panels OR windows.");
+            ui.vertical_centered(|ui| {
+                egui::ScrollArea::vertical().show(ui, |ui | { 
+                    ui.add_sized(ui.available_size(), egui::TextEdit::multiline(editor_text).code_editor())
+                });    
             });
-        }
+        });
     }
+}
+
+fn save_dialog(default_path: Option<&str>) -> Option<String> {
+    let file = nfd::open_save_dialog(None, default_path).unwrap();
+        match file {
+            nfd::Response::Okay(path) => {
+                let p = std::path::Path::new(&path);
+                std::env::set_current_dir(p.parent().unwrap()).unwrap();
+                Some(p.file_name().unwrap().to_str().unwrap().into())
+            },
+            nfd::Response::OkayMultiple(_) | nfd::Response::Cancel => None,
+        }
 }
